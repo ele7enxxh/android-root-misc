@@ -252,8 +252,10 @@ unsigned long find_syscall_table()
         /* if (ret == -1) */
         /*         perror("semop:"); */
 
-        /* vector_swi +  __sys_trace + __sys_trace_return + __cr_agignment */
-        addr += 0x74 + 0x2c + 0x20 + 0x4;
+        /* vector_swi +  __sys_trace + __sys_trace_return  */ 
+        addr += 0x74 + 0x2c + 0x20;
+        addr &= ~0x1f;          /* align 5: __cr_alignment */
+        addr += 0x4;            /* + _cr_alignment */
 
         return addr;
 }
