@@ -14,6 +14,82 @@ unsigned long *ks_markers = 0;
 unsigned char *ks_token_tab = 0;
 unsigned short *ks_token_index = 0;
 
+unsigned long ksyms_pat[] = {0xc0008000, /* stext */
+			     0xc0008000, /* _sinittext */
+			     0xc0008000, /* _stext */
+			     0xc0008000 /* __init_begin */
+};
+unsigned long ksyms_pat2[] = {0xc0008000, /* stext */
+			      0xc0008000 /* _text */
+};
+unsigned long ksyms_pat3[] = {0xc00081c0, /* asm_do_IRQ */
+			      0xc00081c0, /* _stext */
+			      0xc00081c0 /* __exception_text_start */
+};
+/* MTK 3.4 内核 */
+unsigned long ksyms_pat4[] = {0xc0008180, /* asm_do_IRQ */
+			      0xc0008180, /* _stext */
+			      0xc0008180 /* __exception_text_start */
+};
+/* 小米 2 */
+unsigned long ksyms_pat5[] = {0xc0100000, /* asm_do_IRQ */
+			      0xc0100000, /* _stext */
+			      0xc0100000 /* __exception_text_start */
+};
+
+/* lovme */
+unsigned long ksyms_pat6[] = {0x0,
+			      0x1000,
+			      0x1004,
+			      0x1020,
+			      0x10a0
+};
+
+
+
+static int checkPattern(unsigned long *addr, unsigned long *pattern, int patternnum) {
+    unsigned long val, cnt, i;
+
+    val = *addr;
+    if (val == pattern[0]) {
+        cnt = 1;
+        for (i = 1; i < patternnum; i++) {
+		val = *(addr + i);
+            if (val == pattern[i]) {
+                cnt++;
+            } else {
+                break;
+            }
+        }
+	if (cnt == patternnum)
+		return 0;
+    }
+    return 1;
+}
+
+static int check_pat(unsigned long *addr)
+{
+	unsigned long size;
+
+	size = sizeof(unsigned long);
+	if (checkPattern(addr, ksyms_pat, sizeof(ksyms_pat) / size) == 0) {
+		return 0;
+	} else if (checkPattern(addr, ksyms_pat2, sizeof(ksyms_pat2) / size) == 0) {
+		return 0;
+	} else if (checkPattern(addr, ksyms_pat3, sizeof(ksyms_pat3) / size) == 0) {
+		return 0;
+	} else if (checkPattern(addr, ksyms_pat4, sizeof(ksyms_pat4) / size) == 0) {
+		return 0;
+	} else if (checkPattern(addr, ksyms_pat5, sizeof(ksyms_pat5) / size) == 0) {
+		return 0;
+	} else if (checkPattern(addr, ksyms_pat6, sizeof(ksyms_pat6) / size) == 0) {
+		return 0;
+	}
+
+	return 1;
+}
+
+
 int get_ksyms(void);
 
 static unsigned long ks_expand_symbol(unsigned long off, char *namebuf)
@@ -260,13 +336,29 @@ static unsigned long *find_kernel_symbol_tab(void)
         return 0;
 }
 
+static unsigned long *find_kernel_symbol_tab_pat(void)
+{
+        unsigned long *p;
+
+        p = KERNEL_START;
+
+        while (p < KERNEL_STOP ) {
+		if (check_pat(p) == 0)
+			return p;
+		p++;
+	}
+	return 0;
+}
 
 int get_ksyms(void)
 {
         if (ks_address != 0)
                 return 1;
-        
-        ks_address = find_kernel_symbol_tab();
+
+	ks_address = find_kernel_symbol_tab_pat();
+	if (ks_address == 0) {
+		ks_address = find_kernel_symbol_tab();
+	}
         if (ks_address == 0) {
                 //printk("not find ksymbol_tab\n");
                 return 0;
