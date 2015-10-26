@@ -7,12 +7,13 @@
 
 #define KSYM_NAME_LEN  128
 
-unsigned long *ks_address = 0;
-unsigned long *ks_num = 0;
-unsigned char *ks_names = 0;
-unsigned long *ks_markers = 0;
-unsigned char *ks_token_tab = 0;
-unsigned short *ks_token_index = 0;
+unsigned long *ks_address = NULL;
+unsigned long *ks_num = NULL;
+unsigned char *ks_names = NULL;
+unsigned long *ks_markers = NULL;
+unsigned char *ks_token_tab = NULL;
+unsigned short *ks_token_index = NULL;
+unsigned long *ks_address_end = NULL;
 
 unsigned long ksyms_pat[] = {0xc0008000, /* stext */
 			     0xc0008000, /* _sinittext */
@@ -36,7 +37,6 @@ unsigned long ksyms_pat5[] = {0xc0100000, /* asm_do_IRQ */
 			      0xc0100000, /* _stext */
 			      0xc0100000 /* __exception_text_start */
 };
-
 /* lovme */
 unsigned long ksyms_pat6[] = {0x0,
 			      0x1000,
@@ -44,7 +44,6 @@ unsigned long ksyms_pat6[] = {0x0,
 			      0x1020,
 			      0x10a0
 };
-
 
 
 static int checkPattern(unsigned long *addr, unsigned long *pattern, int patternnum) {
@@ -297,11 +296,23 @@ static unsigned long find_kernel_symbol_num(void)
                 num++;
         }
 
+	ks_address_end = addr - 1;
+
         while (*addr == 0)
                 addr++;
 
         return addr;
 }
+
+static void fix_symbol_tab_addr(void)
+{
+	if (ks_num == NULL)
+		return;
+
+	if ((ks_address_end - ks_address) != (*ks_num - 1))
+		ks_address = ks_address_end - *ks_num + 1;
+}
+
 
 static unsigned long *find_kernel_symbol_tab(void)
 {
@@ -370,6 +381,9 @@ int get_ksyms(void)
         ks_num = find_kernel_symbol_num();
         /* if (ks_num) */
         /*         printk("kallsyms_num =%lu\n", *ks_num); */
+
+	/* fix ks_address by ks_num */
+	fix_symbol_tab_addr();
 
         ks_names = find_kernel_symbol_names();
         /* if (ks_names) */
